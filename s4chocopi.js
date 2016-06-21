@@ -27,18 +27,15 @@
 		CPC_GET_BLOCK = 0x0D,
 		CPC_ALL_SAY = 0x0E;
 	//Chocopie command definition
-	
-  var PACKET_START = 0x7E;
 
-  var SAMPLING_RATE = 30;
+  var SAMPLING_RATE = 1;
 
   var majorVersion = 0,
       minorVersion = 0;
 
   var connected = false;
-  var notifyConnection = false;
   var device = null;
-  var inputData = null;
+  
 
   // TEMPORARY WORKAROUND
   // Since _deviceRemoved is not used with Serial devices
@@ -51,7 +48,7 @@
   function send_array(bytearray) {
   	var data = [];
   	var checksum = 0xFF;
-  	data.push(PACKET_START);
+  	data.push(0x7E);
   	for (var i = 0; i < bytearray.length; i++) {
   		if ((bytearray[i] == 0x7E) || (bytearray[i] == 0x7D)) {
   			data.push(0x7D);
@@ -64,7 +61,7 @@
   		}
   	}
   	data.push(checksum);
-  	data.push(PACKET_START);
+  	data.push(0x7E);
   	var u8a = new Uint8Array(data.length);
   	var logstring = "send:";
   	for (var i = 0; i < data.length; i++) {
@@ -126,9 +123,11 @@
 
 //---------------------------------------------------------------------------------------------------------------
 	var s = {listener:null, packet_index: 0, packet_buffer: null, packet_lengh:0, connectedPort : {}, connectedPort_ble : {}, port : 0, detail : 0, blockList : null,		
-		MOTION_IR_VALUE : 0x10, MOTION_ACCEL_VALUE : 0x20, MOTION_PACCEL_VALUE : 0x30, MOTION_PHOTO1_ON : 0x80, MOTION_PHOTO1_OFF : 0x90,
+		MOTION_START : 0x10, MOTION_STOP : 0x20, MOTION_REPORT_VALUE : 0x30, MOTION_PHOTO1_ON : 0x80, MOTION_PHOTO1_OFF : 0x90,
 		MOTION_PHOTO2_ON : 0xA0, MOTION_PHOTO2_OFF : 0xB0, MOTION_ALLPHOTO_STATUS : 0xC0, 
-		SWITCH_BUTTON_ON : 0x10, SWITCH_BUTTON_OFF : 0x00, SWITCH_POTENCY_VALUE : 0x30, SWITCH_JOYX_VALUE : 0x40, SWITCH_JOYY_VALUE : 0x50, SWITCH_ALLBUTTON_STATUS : 0x60};
+		SWITCH_BUTTON_ON : 0x10, SWITCH_BUTTON_OFF : 0x00, SWITCH_POTENCY_VALUE : 0x30, SWITCH_JOYX_VALUE : 0x40, SWITCH_JOYY_VALUE : 0x50, SWITCH_ALLBUTTON_STATUS : 0x60,
+		checksum:0,
+	};
 	
 	function faultHandler(rb){		
 		console.log(parent.name + " Error signal " + parent.port);
@@ -188,13 +187,16 @@
 			s.packet_buffer[s.packet_index++] = rb;		
 			if (s.packet_index == 1){
 		  		parent.functionbit=rb;
-		  		s.packet_lengh=1;
+		  		s.packet_lengh=2;
 		  		for(var i=0;i<8;i++){
 		  			if(rb & (1<<i) ){
 		  				s.packet_lengh+=2;
 		  			}
 			  	}			  	
 			}else if(s.packet_index === s.packet_lengh){								
+				if(s.checksum!=0){
+					console.log("checksum error;");
+				}
 			  	var value, i, data_pointer=1;
 			  	for(i=0;i<8;i++){
 			  		if(parent.functionbit & (1<<i) ){
@@ -317,7 +319,7 @@
 			//console.log("motion started");
 			s.packet_buffer[s.packet_index++] = rb;				
 			//console.log("s.detail " + s.detail);
-		  if (s.detail === s.MOTION_IR_VALUE){
+		  if (s.detail === s.MOTION_START){
 			  if (s.packet_index < 6) return;
 			  parent.values[0] = s.packet_buffer[0] + s.packet_buffer[1] * 256;
 			  parent.values[1] = s.packet_buffer[2] + s.packet_buffer[3] * 256;
@@ -480,8 +482,9 @@
 		for (var i in  inputData){
 			rb=inputData[i];
 			logString+=" " + rb.toString(16);
-			if(rb === PACKET_START){
+			if(rb === 0x7E){
 				s.listener=actionRoot;
+				s.checksum=0xFF;
 			}else{				
 				if(rb==0x7D){
 					isEscaping=true;
@@ -489,7 +492,8 @@
 					if(isEscaping === true){
 						rb=rb ^ 0x20;
 					}
-					isEscaping=false;					
+					isEscaping=false;
+					checksum= checksum ^ rb;
 					s.listener(rb);	
 					
 				}
@@ -503,12 +507,10 @@
 		send_array([ 0x10 | port, functionbit ,  SAMPLING_RATE & 0xFF, SAMPLING_RATE >>8]);			
 	};
 
-	//connectedPort = {["sensor"], ["touch"], ...};	connectedPort, connectedPort_ble 에는 연결된 블록에 대응하는 포트들이 담기게됨.
-	//connectedPort_ble = {["sensor"], ["touch"], ...};	예) s.connectedPort["sensor"] 에는 연결된 포트가 담김
-	function connectBlock (block_id, port) {		// 그렇다면 s.connectedPort["sensor"] 로 접근할경우에는 연결된 포트가 없다면 뭐가 리턴되지?	
-		if(block_id === 0x00) return;				// Array map 에서 운행해서 찾지 못하는 경우에는 -1 이 false 로 떨어지는 듯 함.
+	function connectBlock (block_id, port) {
+		if(block_id === 0x00) return;	
 		switch(block_id){
-			case SCBD_SENSOR: s.blockList[port] = new sensor_block(); set_sampling_rate(port,0xDF); break;			
+			case SCBD_SENSOR: s.blockList[port] = new sensor_block(); set_sampling_rate(port,0xDF); break;
 			case SCBD_TOUCH:  s.blockList[port] = new touch_block(); set_sampling_rate(port,0x0F); break;
 			case SCBD_SWITCH: s.blockList[port] = new switch_block(); set_sampling_rate(port,0x0F); break;
 			case SCBD_MOTION: s.blockList[port] = new motion_block(); set_sampling_rate(port,0x0F); break;
@@ -938,7 +940,7 @@
   var descriptor = {
     blocks: blocks[lang],
     menus: menus[lang],
-    url: 'http://remoted.github.io/scratch-chocopie-extension'    
+    url: 'http://chocopi.github.io/s4chocopi.js'    
   };
 
   ScratchExtensions.register('ChocoPi Board', descriptor, ext, {type:'serial'});
