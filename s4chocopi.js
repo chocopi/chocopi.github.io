@@ -1,7 +1,6 @@
-
 (function(ext) {
 	var SCBD_CHOCOPI = 0x10,
-		SCBD_CHOCOPI_USB = 0xE0,	//Chocopie USB 연결에 대한 값 디테일(상위값 14, 포트0) 을 지정
+		SCBD_CHOCOPI_USB = 0xE0,	//4 high bit for  Chocopie board
 		SCBD_CHOCOPI_USB_PING = 0xE4,
 		SCBD_CHOCOPI_BLE = 0xF0,	//Chocopie BLE 연결에 대한 값 디테일(상위값 15, 포트0) 를 지정	
 		SCBD_CHOCOPI_BLE_PING = 0xF4,
@@ -27,15 +26,18 @@
 		CPC_GET_BLOCK = 0x0D,
 		CPC_ALL_SAY = 0x0E;
 	//Chocopie command definition
+	
+  var PACKET_START = 0x7E;
 
-  var SAMPLING_RATE = 1;
+  var SAMPLING_RATE = 30;
 
   var majorVersion = 0,
       minorVersion = 0;
 
   var connected = false;
+  var notifyConnection = false;
   var device = null;
-  
+  var inputData = null;
 
   // TEMPORARY WORKAROUND
   // Since _deviceRemoved is not used with Serial devices
@@ -48,7 +50,7 @@
   function send_array(bytearray) {
   	var data = [];
   	var checksum = 0xFF;
-  	data.push(0x7E);
+  	data.push(PACKET_START);
   	for (var i = 0; i < bytearray.length; i++) {
   		if ((bytearray[i] == 0x7E) || (bytearray[i] == 0x7D)) {
   			data.push(0x7D);
@@ -61,7 +63,7 @@
   		}
   	}
   	data.push(checksum);
-  	data.push(0x7E);
+  	data.push(PACKET_START);
   	var u8a = new Uint8Array(data.length);
   	var logstring = "send:";
   	for (var i = 0; i < data.length; i++) {
@@ -122,15 +124,11 @@
 
 
 //---------------------------------------------------------------------------------------------------------------
-	var s = {listener:null, packet_index: 0, packet_buffer: null, packet_lengh:0, connectedPort : {}, connectedPort_ble : {}, port : 0, detail : 0, blockList : null,		
-		MOTION_START : 0x10, MOTION_STOP : 0x20, MOTION_REPORT_VALUE : 0x30, MOTION_PHOTO1_ON : 0x80, MOTION_PHOTO1_OFF : 0x90,
-		MOTION_PHOTO2_ON : 0xA0, MOTION_PHOTO2_OFF : 0xB0, MOTION_ALLPHOTO_STATUS : 0xC0, 
-		SWITCH_BUTTON_ON : 0x10, SWITCH_BUTTON_OFF : 0x00, SWITCH_POTENCY_VALUE : 0x30, SWITCH_JOYX_VALUE : 0x40, SWITCH_JOYY_VALUE : 0x50, SWITCH_ALLBUTTON_STATUS : 0x60,
+	var s = {listener:null, packet_index: 0, packet_buffer: null, packet_lengh:0, connectedPort : {}, connectedPort_ble : {}, port : 0, detail : 0, blockList : null,	
 		checksum:0,
 	};
 	
-	function faultHandler(rb){		
-		console.log(parent.name + " Error signal " + parent.port);
+	function faultHandler(rb){
 		s.listener = actionRoot;		
 	}
 	function nullBlock(){
@@ -193,9 +191,10 @@
 		  				s.packet_lengh+=2;
 		  			}
 			  	}			  	
-			}else if(s.packet_index === s.packet_lengh){								
-				if(s.checksum!=0){
-					console.log("checksum error;");
+			}else if(s.packet_index === s.packet_lengh){
+				if(s.checksum !=0 ){
+					console.log("checksum error");
+
 				}
 			  	var value, i, data_pointer=1;
 			  	for(i=0;i<8;i++){
@@ -219,10 +218,8 @@
 
 	function switch_block(){
 		this.port= -1;
-		this.potencyometer = 0;
-		this.joyX = 0;
-		this.joyY = 0;
-		this.buttonStatus = new Array(6);
+		this.jogs = new Array(3);
+		this.buttonStatus = new Array(5);
 		this.name = "switch";
 		
 		for(var i=0; i < 6; i++){
@@ -231,29 +228,35 @@
 		
 		var parent = this;
 		this.listener = function(rb) {
-		  s.packet_buffer[s.packet_index++] = rb;
-		  if (s.detail === s.SWITCH_BUTTON_ON){	//rb have a button id starting from 1
-//			console.log(rb + " button pressed");
-			 parent.buttonStatus[rb]=true; //buttonEvent is on
-		  }else if (s.detail === s.SWITCH_BUTTON_OFF){
-			 parent.buttonStatus[rb]=false; //buttonEvent is off
-		  }else if (s.detail === s.SWITCH_POTENCY_VALUE){
-			 if (s.packet_index < 2) return;
-			 parent.potencyometer = s.packet_buffer[0] + s.packet_buffer[1] * 256;
-		  }else if (s.detail === s.SWITCH_JOYX_VALUE){
-			 if (s.packet_index < 2) return; 
-			 parent.joyX = s.packet_buffer[0] + s.packet_buffer[1] * 256;
-		  }else if (s.detail === s.SWITCH_JOYY_VALUE){
-			 if (s.packet_index < 2) return; 
-			 parent.joyY = s.packet_buffer[0] + s.packet_buffer[1] * 256;
-		  }else if (s.detail === s.SWITCH_ALLBUTTON_STATUS){
-			 for(var i=0; i < 5; i++){
-				var sw_status = (rb >> i) & 0x01;
-				parent.buttonStatus[i+1] = (sw_status === 1)? true : false;
-			 }
-		  }
-		  pingReceived = true;
-		  s.listener = actionRoot;
+			s.packet_buffer[s.packet_index++] = rb;		
+			if (s.packet_index == 1){
+		  		parent.functionbit=rb;
+		  		s.packet_lengh=2;
+		  		for(var i=0;i<4;i++){
+		  			if(rb & (1<<i) ){
+		  				s.packet_lengh+=2;
+		  			}
+			  	}			  	
+			}else if(s.packet_index === s.packet_lengh){
+				if(s.checksum !=0 ){
+					console.log("checksum error");
+				}
+			  	var value, i, data_pointer=1;
+			  	for(i=0;i<3;i++){
+			  		if(parent.functionbit & (1<<i) ){
+			  			value=s.packet_buffer[data_pointer] + (s.packet_buffer[data_pointer+1]*256);
+			  			parent.jogs[i]=value;
+			  			data_pointer+=2;
+			  		}			  		
+			  	}		  
+			  	if(parent.functionbit & 0b1000){
+			  		for(i=0;i<5;i++){
+  					 	parent.buttonStatus[i]= s.packet_buffer[data_pointer] & (1<<(4-i)) ?1:0 ; //buttonEvent is on
+			  		}
+			  	}
+		  		pingReceived = true;
+			  	s.listener = actionRoot;
+			}
 		};
 		
 	}
@@ -263,43 +266,36 @@
 		this.port= -1;
 		this.touchStatus =0;
 		this.touchValues= new Array(12);
-		this.higherThan = 0;
-		this.lowerThan = 0;
-		
-		
+		this.rising = 0;
+		this.falling = 0;
 		this.name = "touch";
 		var parent = this;
 		
 		this.listener = function(rb) {
 			s.packet_buffer[s.packet_index++] = rb;		
-			switch(s.detail){				
-				case 0x10: // DTT_PRESSED
-					if (s.packet_index < 2) return;
-					parent.touchStatus= s.packet_buffer[0]+s.packet_buffer[1]*256;				
-				break;
-				case 0x20: //RELEASED
-					if (s.packet_index < 2) return;
-					parent.touchStatus &= ~(s.packet_buffer[0]+s.packet_buffer[1]*256);					
-				break;
-				case 0x30: // STATUS
-					if (s.packet_index < 2) return;
-					parent.touchStatus= s.packet_buffer[0]+s.packet_buffer[1]*256;
-				break;
-				case 0x40: // HIGHER THAN EVENT
-					if (s.packet_index < 2) return;
-					parent.higherThan= s.packet_buffer[0]+s.packet_buffer[1]*256;
-				break;
-				case 0x50: // LOWER THAN EVENT
-					if (s.packet_index < 2) return;
-					parent.lowerThan= s.packet_buffer[0]+s.packet_buffer[1]*256;
-				break;
-				case 0x60: // TOUCH VALUE
-					if (s.packet_index < 24) return;
-					parent.touchValues= s.packet_buffer[0]+s.packet_buffer[1]*256;
-				break;
+			if(s.detail != 0x10) return;
+			if (s.packet_index == 1){
+		  		parent.functionbit=rb;
+		  		s.packet_lengh=2;		  		
+		  		if(rb & (1<<0) ){ s.packet_lengh+=4;}
+		  		if(rb & (1<<1) ){ s.packet_lengh+=2;}
+		  		if(rb & (1<<2) ){ s.packet_lengh+=2;}
+		  		if(rb & (1<<3) ){ s.packet_lengh+=24;}			  	
+			}else if(s.packet_index === s.packet_lengh){
+				if(s.checksum !=0 ){
+					console.log("checksum error");
+				}
+			  	var value, i, data_pointer=1;
+		  		if(parent.functionbit & (1<<0) ){ parent.touchStatus =  s.packet_buffer[data_pointer] + (s.packet_buffer[data_pointer+1]*256) ; data_pointer+=4;} //button status
+		  		if(parent.functionbit & (1<<1) ){ parent.touchStatus =  s.packet_buffer[data_pointer] + (s.packet_buffer[data_pointer+1]*256) ; data_pointer+=2;}
+		  		if(parent.functionbit & (1<<2) ){ parent.touchStatus =  s.packet_buffer[data_pointer] + (s.packet_buffer[data_pointer+1]*256) ; data_pointer+=2;}
+		  		if(parent.functionbit & (1<<3) ){ 
+		  			for(i=0;i<12;i++){
+		  				parent.touchValues[i]= s.packet_buffer[data_pointer] + (s.packet_buffer[data_pointer+1]*256) ; data_pointer+=2;
+		  			} 
+		  		}
+			  	s.listener = actionRoot;
 			}
-			pingReceived = true;
-			s.listener = actionRoot;
 		};				
 	}
 	//Boolean 패치 완료
@@ -308,10 +304,11 @@
 		this.port= -1;
 		this.values = new Array(11);
 		this.photoGateTime = [[0,0],[0,0]];		
-		
-		
+		this.functionbit=0x17;
 
 		this.name = "motion";
+		this.photogate_event_count=0;
+		this.event_time;
 
 		var parent = this;
 		
@@ -319,44 +316,65 @@
 			//console.log("motion started");
 			s.packet_buffer[s.packet_index++] = rb;				
 			//console.log("s.detail " + s.detail);
-		  if (s.detail === s.MOTION_START){
-			  if (s.packet_index < 6) return;
-			  parent.values[0] = s.packet_buffer[0] + s.packet_buffer[1] * 256;
-			  parent.values[1] = s.packet_buffer[2] + s.packet_buffer[3] * 256;
-			  parent.values[2] = s.packet_buffer[4] + s.packet_buffer[5] * 256;
-		  }else if (s.detail === s.MOTION_ACCEL_VALUE){
-			  if (s.packet_index < 6) return;
-			  parent.values[3] = s.packet_buffer[0] + s.packet_buffer[1] * 256;
-			  parent.values[4]= s.packet_buffer[2] + s.packet_buffer[3] * 256;
-			  parent.values[5]= s.packet_buffer[4] + s.packet_buffer[5] * 256;
-		  }else if (s.detail === s.MOTION_PACCEL_VALUE){
-			  if (s.packet_index < 6) return;
-			  parent.values[6] = s.packet_buffer[0] + s.packet_buffer[1] * 256;
-			  parent.values[7] = s.packet_buffer[2] + s.packet_buffer[3] * 256;
-			  parent.values[8] = s.packet_buffer[4] + s.packet_buffer[5] * 256;
-		  }else if ((s.detail === s.MOTION_PHOTO1_ON)){
-			  if (s.packet_index < 4) return;
-			  parent.values[9] = 1;
-			  parent.photoGateTime[0][1]= s.packet_buffer[0] + s.packet_buffer[1] * 256 + s.packet_buffer[2] * 256 * 256 + s.packet_buffer[3] * 256 * 256 * 256;
-		  }else if ((s.detail === s.MOTION_PHOTO1_OFF)){
-			  if (s.packet_index < 4) return;
-			  parent.values[9] = 0;
-			  parent.photoGateTime[0][0] = s.packet_buffer[0] + s.packet_buffer[1] * 256 + s.packet_buffer[2] * 256 * 256 + s.packet_buffer[3] * 256 * 256 * 256;
-		  }else if ((s.detail === s.MOTION_PHOTO2_ON)){
-			  if (s.packet_index < 4) return;
-			  parent.values[10] = 1;
-			  parent.photoGateTime[1][0] = s.packet_buffer[0] + s.packet_buffer[1] * 256 + s.packet_buffer[2] * 256 * 256 + s.packet_buffer[3] * 256 * 256 * 256;
-			}else if ((s.detail === s.MOTION_PHOTO2_OFF)){
-			  if (s.packet_index < 4) return;
-			  parent.values[10] = 0;
-			  parent.photoGateTime[1][1]  = s.packet_buffer[0] + s.packet_buffer[1] * 256 + s.packet_buffer[2] * 256 * 256 + s.packet_buffer[3] * 256 * 256 * 256;			  
-		  }else if (s.detail === s.MOTION_ALLPHOTO_STATUS){
-			 if (s.packet_index < 1) return;
-			 parent.values[9]  = (s.packet_buffer[0] & 0x01);
-			 parent.values[10]  = (s.packet_buffer[0] & 0x01) >> 1;			 
+		  if (s.detail === 0x10){ //get value
+			if (s.packet_index == 1){
+		  		parent.functionbit=rb;
+		  		s.packet_lengh=2; //length,checksum,
+		  		var i;
+                for (i = 0; i < 3; i++) //bit 0,1,2: ir, acc,gyro
+                {
+                    if ((rb & (1 << i)) > 0) s.packet_lengh += 6;
+                }
+                if ((rb & (1 << 4)) > 0) s.packet_lengh += 1; //photogate
+                        
+            }else if(s.packet_index === s.packet_lengh){
+				if(s.checksum !=0 ){
+					console.log("checksum error");
+					send_array([ 0x30 | parent.port, parent.functionbit ]); // 0x30: get data  get data again
+				}
+			  	var value, i,j, data_pointer=1;
+			  	for(i=0;i<3;i++){
+			  		if(parent.functionbit & (1<<i) ){
+			  			for(j=0;j<3;j++){
+				  			value=s.packet_buffer[data_pointer] + (s.packet_buffer[data_pointer+1]*256);
+				  			parent.values[i*3+j] =  value;
+				  			data_pointer+=2;			  			
+			  			}
+			  		}			  		
+			  	}		  		
+			  	if(parent.functionbit & (1<<4) ){
+			  		parent.values[9]= (s.packet_buffer[data_pointer] & 1 )? 1:0;
+			  		parent.values[10]= (s.packet_buffer[data_pointer] & 2 )? 1:0;
+			  	}
+		  		pingReceived = true;
+			  	s.listener = actionRoot;
+			}
+		  }else if (s.detail === 0x20){ //photogate event
+			if (s.packet_index == 1){
+		  		parent.photogate_event_count=rb;
+		  		if(parent.photogate_event_count>10) {
+		  			s.listener = actionRoot; //it's error
+		  			return;
+		  		}
+		  		s.packet_lengh=parent.photogate_event_count*5+ 2; //length,checksum,
+            }else if(s.packet_index === s.packet_lengh){
+				if(s.checksum !=0 ){
+					console.log("checksum error #" + s.packet_lengh + "/ch:" + s.checksum );
+					send_array([ 0x30 | parent.port, parent.functionbit ]); // 0x30: get data  get data again
+					s.listener = actionRoot;
+					return;
+				}
+			  	var value, i,data_pointer=1;
+			  	for(i=0;i<parent.photogate_event_count;i++){				  	
+				  	parent.values[9]= (s.packet_buffer[data_pointer] & 1 )? 1:0;
+				  	parent.values[10]= (s.packet_buffer[data_pointer] & 2 )? 1:0;				  	
+				  	parent.event_time= s.packet_buffer[data_pointer+1] + (s.packet_buffer[data_pointer+2]<<8) + (s.packet_buffer[data_pointer+2]<<16) + (s.packet_buffer[data_pointer+2]<<24) ;
+				  	data_pointer+=5; 
+			  	}		  		
+		  		pingReceived = true;
+			  	s.listener = actionRoot;
+			}
 		  }
-		  pingReceived = true;
-		  s.listener = actionRoot;
 		};
 	}
 
@@ -482,7 +500,7 @@
 		for (var i in  inputData){
 			rb=inputData[i];
 			logString+=" " + rb.toString(16);
-			if(rb === 0x7E){
+			if(rb === PACKET_START){
 				s.listener=actionRoot;
 				s.checksum=0xFF;
 			}else{				
@@ -493,7 +511,7 @@
 						rb=rb ^ 0x20;
 					}
 					isEscaping=false;
-					checksum= checksum ^ rb;
+					s.checksum ^= rb;
 					s.listener(rb);	
 					
 				}
@@ -507,11 +525,13 @@
 		send_array([ 0x10 | port, functionbit ,  SAMPLING_RATE & 0xFF, SAMPLING_RATE >>8]);			
 	};
 
-	function connectBlock (block_id, port) {
-		if(block_id === 0x00) return;	
+	//connectedPort = {["sensor"], ["touch"], ...};	connectedPort, connectedPort_ble 에는 연결된 블록에 대응하는 포트들이 담기게됨.
+	//connectedPort_ble = {["sensor"], ["touch"], ...};	예) s.connectedPort["sensor"] 에는 연결된 포트가 담김
+	function connectBlock (block_id, port) {		// 그렇다면 s.connectedPort["sensor"] 로 접근할경우에는 연결된 포트가 없다면 뭐가 리턴되지?	
+		if(block_id === 0x00) return;				// Array map 에서 운행해서 찾지 못하는 경우에는 -1 이 false 로 떨어지는 듯 함.
 		switch(block_id){
-			case SCBD_SENSOR: s.blockList[port] = new sensor_block(); set_sampling_rate(port,0xDF); break;
-			case SCBD_TOUCH:  s.blockList[port] = new touch_block(); set_sampling_rate(port,0x0F); break;
+			case SCBD_SENSOR: s.blockList[port] = new sensor_block(); set_sampling_rate(port,0xDF); break;			
+			case SCBD_TOUCH:  s.blockList[port] = new touch_block(); set_sampling_rate(port,0x60); break;
 			case SCBD_SWITCH: s.blockList[port] = new switch_block(); set_sampling_rate(port,0x0F); break;
 			case SCBD_MOTION: s.blockList[port] = new motion_block(); set_sampling_rate(port,0x0F); break;
 			case SCBD_LED:	s.blockList[port] = new led_block();	break;
@@ -612,7 +632,7 @@
 		var object = s.blockList[port];	
 		var sw_index = menu_index['sw'][sw];		
 		btnStates = (btnStates ==1) ? true:false;
-		if(object.buttonStatus[sw_index+1] == btnStates){			
+		if(object.buttonStatus[sw_index] == btnStates){			
 			return true;
 		}		
 		return false;			
@@ -622,7 +642,7 @@
 		port=getConnectedPort('switch',port);
 		if (port === -1) return;
 		var sw_index = menu_index['sw'][sw];
-		return s.blockList[port].buttonStatus[sw_index+1];
+		return s.blockList[port].buttonStatus[sw_index];
 		
 	};
 	//2016.05.01 스위치 블록 boolean 패치에 따라서 생겨난 함수
@@ -635,9 +655,9 @@
 		var object = s.blockList[port];	
 		var index=  menu_index['buttons'][buttons];
 		switch(index){
-			case 0: return object.joyX;
-			case 1: return object.joyY;
-			case 2:	return object.potencyometer;
+			case 0: return object.jogs[0];
+			case 1: return object.jogs[1];
+			case 2:	return object.jogs[2];
 		}
 	};
 	//REPOTER PATCH CLEAR
@@ -940,7 +960,7 @@
   var descriptor = {
     blocks: blocks[lang],
     menus: menus[lang],
-    url: 'http://chocopi.github.io/s4chocopi.js'    
+    url: 'http://remoted.github.io/scratch-chocopie-extension'    
   };
 
   ScratchExtensions.register('ChocoPi Board', descriptor, ext, {type:'serial'});
